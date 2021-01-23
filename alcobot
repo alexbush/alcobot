@@ -1,0 +1,191 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use v5.13.9;
+use FindBin qw($Bin);
+
+exit main() unless caller;
+
+sub main {
+	my $config = do("$Bin/config.pl");
+
+	die "I need token to start" unless $config->{token};
+	$config->{timer} //= 2;
+
+	my $app = App->new(
+		token => $config->{token},
+		timer => $config->{timer},
+	)->run;
+}
+
+#========================================================================================
+
+package App {
+	use strict;
+	use warnings;
+
+	BEGIN {
+		for my $method ( qw/token timer/ ) {
+			no strict 'refs';
+			*$method = sub {
+				my $self = shift;
+				if (@_) { $self->{ $method } = shift }
+				return $self->{ $method };
+			};
+		}
+	}
+
+	sub new {
+		my ($class, %args) = @_;
+		my $self = {
+		};
+		bless $self, $class;
+		$self->token($args{token});
+		$self->timer($args{timer});
+		return $self;
+	}
+
+	sub run {
+		my $self = shift;
+		my $telegram = Telegram->new(
+			token => $self->token,
+		);
+
+		while (42) {
+			if (my $msg = $telegram->next) {
+				if ($msg->{message}{text}) {
+					if ($msg->{message}{text} =~ m#^/ping#) {
+						$telegram->send(
+							chat_id => $msg->{message}{chat}{id},
+							text    => 'pong',
+							token   => $self->token,
+						);
+					}
+				}
+			}
+			sleep $self->timer;
+		}
+	}
+}
+
+#========================================================================================
+
+package Telegram {
+	use strict;
+	use warnings;
+	
+	BEGIN {
+		for my $method ( qw/_token _update_id/ ) {
+			no strict 'refs';
+			*$method = sub {
+				my $self = shift;
+				if (@_) { $self->{ $method } = shift }
+				return $self->{ $method };
+			};
+		}
+	}
+
+	sub new {
+		my ($class, %args) = @_;
+		my $self = {
+			update_id => undef,
+		};
+		bless $self, $class;
+		$self->_token($args{token});
+		return $self;
+	}
+
+	sub next {
+		my $self = shift;
+		my $upd = Telegram::Api->get_updates(
+			token     => $self->_token,
+			update_id => $self->_update_id,
+		);
+
+		if ($upd) {
+			$self->_update_id($upd->{update_id} + 1);
+			return $upd;
+		}
+
+		return undef;
+	}
+
+	sub send {
+		my ($self, %args) = @_;
+		my $api = Telegram::Api->send_message(
+			token   => $self->_token,
+			chat_id => $args{chat_id},
+			text    => $args{text},
+		);
+	}
+}
+
+#========================================================================================
+
+package Telegram::Api {
+	use strict;
+	use warnings;
+	use HTTP::Tiny;
+	use JSON::PP qw(decode_json encode_json);
+
+	sub send_message {
+		my ($self, %args) = @_;
+		_post(%args);
+	}
+
+	sub get_updates {
+		my ($self, %args) = @_;
+		return _get(
+			path	  => '/getUpdates',
+			token   => $args{token},
+			queries => {
+				allowed_updates => 'update_id,message',
+				limit           => 1,
+				offset          => $args{update_id},
+			},
+		);
+	}
+
+	sub _post {
+		my (%args) = @_;
+		my $url = sprintf 'https://api.telegram.org/bot%s/sendMessage', $args{token};
+
+		my $content = encode_json( {
+				text    => $args{text},
+				chat_id => $args{chat_id},
+			});
+
+		my $headers = {
+			'Content-Type' => 'application/json; charset=utf-8',
+		};
+
+		my $response = HTTP::Tiny->new->post($url, {
+				content => $content,
+				headers => $headers});
+	}
+
+	sub _get {
+		my (%args) = @_;
+
+		my @queries;
+		while (my ($key, $value) = each %{$args{queries}}) {
+			push @queries, sprintf('%s=%s', $key, $value) if $value;
+		}
+
+		my $response = HTTP::Tiny->new->get(sprintf('https://api.telegram.org/bot%s%s?%s',
+			$args{token},
+			$args{path},
+			join '&', @queries,
+		));
+
+		say STDERR "$response->{status} $response->{reason}"
+			unless $response->{status} == 200;
+
+		my $result;
+		eval { $result = decode_json $response->{content} };
+		if ($@) {return undef;}
+
+		return $result->{result}[0];
+	}
+}
