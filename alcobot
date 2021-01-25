@@ -74,7 +74,7 @@ package App {
 package Telegram {
 	use strict;
 	use warnings;
-	
+
 	BEGIN {
 		for my $method ( qw/_token _update_id/ ) {
 			no strict 'refs';
