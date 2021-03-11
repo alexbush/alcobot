@@ -73,25 +73,26 @@ package App {
 		);
 
 		while (42) {
+			if ((time - $self->_last_msg_at) > 3600) {
+				$self->_last_msg_at(time);
+				my $word   = Brain::random_word();
+				my $answer = Brain::answer($word);
+
+				if ($answer) {
+					$telegram->send(
+						chat_id => $self->_chat_id,
+						text    => $answer,
+						token   => $self->token,
+					);
+				}
+			}
+
 			if (my $msg = $telegram->next) {
 				say Dumper $msg->{message};
 				if ($self->_chat_id and $msg->{message}{chat}{id}) {
 					next unless $msg->{message}{chat}{id} eq $self->_chat_id;
 				}
 
-				if ((time - $self->_last_msg_at) > 3600) {
-					$self->_last_msg_at(time);
-					my $word   = Brain::random_word();
-					my $answer = Brain::answer($word);
-
-					if ($answer) {
-						$telegram->send(
-							chat_id => $self->_chat_id,
-							text    => $answer,
-							token   => $self->token,
-						);
-					}
-				}
 
 				if ($msg->{message}{text}) {
 					my @words = split(/\s+/, $msg->{message}{text});
@@ -111,6 +112,7 @@ package App {
 					}
 				}
 			}
+
 			sleep $self->timer;
 		}
 	}
