@@ -45,7 +45,7 @@ package App {
 	use Data::Dumper;
 
 	BEGIN {
-		for my $method ( qw/token timer _chat_id/ ) {
+		for my $method ( qw/token timer _chat_id _last_msg_at/ ) {
 			no strict 'refs';
 			*$method = sub {
 				my $self = shift;
@@ -62,6 +62,7 @@ package App {
 		$self->token($args{token});
 		$self->timer($args{timer});
 		$self->_chat_id($args{chat_id});
+		$self->_last_msg_at(time);
 		return $self;
 	}
 
@@ -76,6 +77,20 @@ package App {
 				say Dumper $msg->{message};
 				if ($self->_chat_id and $msg->{message}{chat}{id}) {
 					next unless $msg->{message}{chat}{id} eq $self->_chat_id;
+				}
+
+				if ((time - $self->_last_msg_at) > 3600) {
+					$self->_last_msg_at(time);
+					my $word   = Brain::random_word();
+					my $answer = Brain::answer($word);
+
+					if ($answer) {
+						$telegram->send(
+							chat_id => $self->_chat_id,
+							text    => $answer,
+							token   => $self->token,
+						);
+					}
 				}
 
 				if ($msg->{message}{text}) {
@@ -150,6 +165,13 @@ package Brain {
 		}
 
 		return $phrase eq $key_word ? undef : $phrase;
+	}
+
+	sub random_word {
+		my $word = $DB->execute(
+			q{SELECT first FROM pairs ORDER BY RANDOM() LIMIT 1}
+		)->one;
+		return $word->{first};
 	}
 }
 
