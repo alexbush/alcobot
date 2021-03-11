@@ -1,21 +1,39 @@
 #!/usr/bin/env perl
 
+use utf8;
 use strict;
 use warnings;
 use v5.13.9;
+use DBIx::Custom;
 use FindBin qw($Bin);
+use HTTP::Tiny;
+
+my $DB;
 
 exit main() unless caller;
 
 sub main {
+	my ($ok, $why) = HTTP::Tiny->can_ssl;
+	die $why unless $ok;
+
 	my $config = do("$Bin/config.pl");
 
-	die "I need token to start" unless $config->{token};
+	die "I need a token to start" unless $config->{token};
+	die "I need a brain to start" unless $config->{db};
+
+	$DB = DBIx::Custom->connect(
+		"dbi:SQLite:database=$Bin/$config->{db}",
+		undef,
+		undef,
+		{sqlite_unicode => 1},
+	);
+
 	$config->{timer} //= 2;
 
-	my $app = App->new(
-		token => $config->{token},
-		timer => $config->{timer},
+	App->new(
+		token   => $config->{token},
+		timer   => $config->{timer},
+		chat_id => $config->{chat},
 	)->run;
 }
 
@@ -24,9 +42,10 @@ sub main {
 package App {
 	use strict;
 	use warnings;
+	use Data::Dumper;
 
 	BEGIN {
-		for my $method ( qw/token timer/ ) {
+		for my $method ( qw/token timer _chat_id/ ) {
 			no strict 'refs';
 			*$method = sub {
 				my $self = shift;
@@ -38,34 +57,99 @@ package App {
 
 	sub new {
 		my ($class, %args) = @_;
-		my $self = {
-		};
+		my $self = {};
 		bless $self, $class;
 		$self->token($args{token});
 		$self->timer($args{timer});
+		$self->_chat_id($args{chat_id});
 		return $self;
 	}
 
 	sub run {
-		my $self = shift;
+		my $self     = shift;
 		my $telegram = Telegram->new(
 			token => $self->token,
 		);
 
 		while (42) {
 			if (my $msg = $telegram->next) {
+				say Dumper $msg->{message};
+				if ($self->_chat_id and $msg->{message}{chat}{id}) {
+					next unless $msg->{message}{chat}{id} eq $self->_chat_id;
+				}
+
 				if ($msg->{message}{text}) {
-					if ($msg->{message}{text} =~ m#^/ping#) {
-						$telegram->send(
-							chat_id => $msg->{message}{chat}{id},
-							text    => 'pong',
-							token   => $self->token,
-						);
+					my @words = split(/\s+/, $msg->{message}{text});
+					Brain::memorize(@words) if (scalar @words) > 1;
+
+					if (int(rand(10)) == 3) {
+						my $word   = $words[int(rand((scalar @words)-1))];
+						my $answer = Brain::answer($word);
+
+						if ($answer) {
+							$telegram->send(
+								chat_id => $msg->{message}{chat}{id},
+								text    => $answer,
+								token   => $self->token,
+							);
+						}
 					}
 				}
 			}
 			sleep $self->timer;
 		}
+	}
+}
+
+#========================================================================================
+
+package Brain {
+	use strict;
+	use warnings;
+
+	sub memorize {
+		if (@_ > 1) {
+			my $first_word = shift;
+			for my $word (@_) {
+				if ($first_word !~ m/[.,-]/) {
+					$DB->execute(
+						'INSERT INTO pairs (first, second) VALUES (:f, :s)
+						ON CONFLICT(first, second)
+						DO UPDATE SET cnt = cnt + 1',
+						{
+							f => lc $first_word =~ s/[,.?!;"']//gr,
+							s => lc $word       =~ s/[,.?!;"']//gr,
+						},
+					);
+				}
+
+				$first_word = $word;
+			}
+		}
+	}
+
+	sub answer {
+		my $key_word    = shift;
+		my $tmp_word    = $key_word;
+		my $phrase_size = int(rand(10)) + 5;
+		my $phrase      = $tmp_word;
+
+		while ($phrase_size) {
+			my $words = $DB->execute(
+				'SELECT second FROM pairs WHERE first = :f ORDER BY cnt DESC LIMIT 4',
+				{f => $tmp_word},
+			)->all;
+
+			my $cnt = scalar @$words;
+
+			my $word = $words->[int(rand($cnt))]->{second};
+
+			$phrase .= " $word" if $word;
+			$tmp_word = $word;
+			$phrase_size--;
+		}
+
+		return $phrase eq $key_word ? undef : $phrase;
 	}
 }
 
@@ -179,7 +263,7 @@ package Telegram::Api {
 			join '&', @queries,
 		));
 
-		say STDERR "$response->{status} $response->{reason}"
+		say STDERR "[ERR] $response->{status} $response->{reason}"
 			unless $response->{status} == 200;
 
 		my $result;

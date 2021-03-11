@@ -1,4 +1,6 @@
 {
 	token => '',
-	timer => 2,
+	timer => 0.5,
+	chat  => 0,
+	db    => 'brain.sqlite',
 }
